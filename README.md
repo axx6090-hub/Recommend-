@@ -1,69 +1,79 @@
-# Zernio Webhook
+# Zernio Webhook — Cloudflare Worker
 
-Webhook service for Instagram comments through Zernio.
+Cloudflare Worker for handling Zernio `comment.received` webhooks.
 
 ## What it does
 
 When Zernio sends a `comment.received` event:
 
-1. Verifies the webhook signature with `X-Zernio-Signature`.
-2. Checks whether the comment text exactly matches `Ai` (case-insensitive).
-3. Sends a random public reply to that specific comment.
-4. Sends the comment author a private reply through Zernio's private-reply API.
-5. Deduplicates repeated webhook deliveries by event ID.
+1. Verifies the webhook signature when `ZERNIO_WEBHOOK_SECRET` is configured.
+2. Checks whether the comment exactly matches `KEYWORD` (default: `Ai`, case-insensitive).
+3. Sends one random public reply to the comment.
+4. Attempts a private reply through Zernio.
+5. Returns `202 Accepted` quickly and continues processing with Cloudflare `waitUntil()`.
 
-## Important Meta/Zernio limit
-
-This project bypasses **Zernio automation-level deduplication** because every new comment is handled by your webhook code.
-
-However, Meta still allows only **one private reply per individual comment**, and the private reply must be sent within the allowed window. A repeat commenter can therefore trigger again when they make a **new comment**, but the same exact comment cannot receive multiple private replies.
-
-## Environment variables
-
-Copy `.env.example` values into your hosting provider:
-
-- `ZERNIO_API_KEY`
-- `ZERNIO_WEBHOOK_SECRET`
-- `KEYWORD` (default `Ai`)
-- `PUBLIC_REPLIES` separated by `|`
-- `DM_MESSAGE`
-
-Never commit your real API key.
-
-## Endpoint
-
-After deployment:
-
-`POST https://YOUR-DOMAIN/webhooks/zernio`
+## Endpoints
 
 Health check:
 
-`GET https://YOUR-DOMAIN/`
+`GET https://YOUR-WORKER.workers.dev/`
+
+Zernio webhook:
+
+`POST https://YOUR-WORKER.workers.dev/webhooks/zernio`
+
+## Cloudflare deployment
+
+### Option 1 — Cloudflare Dashboard + GitHub
+
+1. Open Cloudflare Dashboard.
+2. Go to **Workers & Pages**.
+3. Choose **Create** / **Import a repository**.
+4. Select `axx6090-hub/Recommend-`.
+5. Use the repository root as the project directory.
+6. Deploy the Worker.
+7. In **Settings → Variables and Secrets**, add these as encrypted secrets:
+   - `ZERNIO_API_KEY`
+   - `ZERNIO_WEBHOOK_SECRET`
+8. `KEYWORD`, `DM_MESSAGE`, and `PUBLIC_REPLIES` already have defaults in `wrangler.toml` and can be changed there or in Cloudflare variables.
+9. Copy the resulting `workers.dev` URL and append `/webhooks/zernio` for Zernio.
+
+### Option 2 — Wrangler CLI
+
+```bash
+npm install
+npx wrangler login
+npx wrangler secret put ZERNIO_API_KEY
+npx wrangler secret put ZERNIO_WEBHOOK_SECRET
+npm run deploy
+```
 
 ## Zernio webhook setup
 
-Create or update a Zernio webhook with:
+Configure Zernio with:
 
 - Event: `comment.received`
-- URL: `https://YOUR-DOMAIN/webhooks/zernio`
-- Secret: the same value as `ZERNIO_WEBHOOK_SECRET`
+- URL: `https://YOUR-WORKER.workers.dev/webhooks/zernio`
+- Secret: exactly the same value stored in Cloudflare as `ZERNIO_WEBHOOK_SECRET`
 
-## Deploy on Render
+## Local development
 
-1. Push this project to GitHub.
-2. Render → New → Web Service.
-3. Connect the repository.
-4. Add the environment variables.
-5. Deploy.
-6. Copy the Render public URL into Zernio Webhooks.
-7. Use Zernio's webhook test and then test with a real Instagram comment containing `Ai`.
+Create a `.dev.vars` file locally:
 
-## API endpoints used
+```env
+ZERNIO_API_KEY=your_zernio_api_key
+ZERNIO_WEBHOOK_SECRET=your_webhook_secret
+```
 
-Public reply:
+Then run:
 
-`POST /v1/inbox/comments/{postId}`
+```bash
+npm install
+npm run dev
+```
 
-Private reply:
+## Important
 
-`POST /v1/inbox/comments/{postId}/{commentId}/private-reply`
+Never commit the real Zernio API key or webhook secret to GitHub. Keep both as Cloudflare encrypted secrets.
+
+Meta/Zernio may still enforce platform limits on private replies. A new comment can trigger the Worker again, but the same exact comment may not be eligible for repeated private replies.
