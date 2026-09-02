@@ -206,16 +206,22 @@ async function processComment(payload, env) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    const webhookPaths = new Set(["/webhook/zernio", "/webhooks/zernio"]);
 
     if (request.method === "GET" && url.pathname === "/") {
       return json({
         ok: true,
         service: "zernio-webhook",
         runtime: "cloudflare-worker",
+        webhook: "/webhook/zernio",
       });
     }
 
-    if (request.method !== "POST" || url.pathname !== "/webhooks/zernio") {
+    if (request.method === "GET" && webhookPaths.has(url.pathname)) {
+      return json({ ok: true, endpoint: url.pathname, method: "POST" });
+    }
+
+    if (request.method !== "POST" || !webhookPaths.has(url.pathname)) {
       return json({ error: "Not found" }, 404);
     }
 
