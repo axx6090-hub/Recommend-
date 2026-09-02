@@ -1,0 +1,9 @@
+name = "recommend-zernio-webhook"
+main = "server.js"
+compatibility_date = "2026-09-02"
+workers_dev = true
+
+[vars]
+KEYWORD = "Ai"
+DM_MESSAGE = "هلا 💙 هذا هو الشي المجاني اللي طلبته."
+PUBLIC_REPLIES = "تابعني حتى اكدر ارسلك لان حسابك خاص💫|دزلي متابعه حتى اكدر ادزلك مجاني💙|تابعني حتى اكدر ارسلك♥️"
