@@ -1,47 +1,10 @@
-import http from "node:http";
-import crypto from "node:crypto";
-
-const PORT = Number(process.env.PORT || 3000);
-const ZERNIO_API_KEY = process.env.ZERNIO_API_KEY || "";
-const ZERNIO_WEBHOOK_SECRET = process.env.ZERNIO_WEBHOOK_SECRET || "";
-const KEYWORD = (process.env.KEYWORD || "Ai").trim().toLowerCase();
-const DM_MESSAGE =
-  process.env.DM_MESSAGE ||
-  "هلا 💙 هذا هو الشي المجاني اللي طلبته.";
-const PUBLIC_REPLIES = (
-  process.env.PUBLIC_REPLIES ||
-  "تابعني حتى اكدر ارسلك لان حسابك خاص💫|دزلي متابعه حتى اكدر ادزلك مجاني💙|تابعني حتى اكدر ارسلك♥️"
-)
-  .split("|")
-  .map((s) => s.trim())
-  .filter(Boolean);
-
 const API_BASE = "https://zernio.com/api/v1";
-const seenEvents = new Map();
-const SEEN_TTL_MS = 48 * 60 * 60 * 1000;
 
-function cleanupSeen() {
-  const cutoff = Date.now() - SEEN_TTL_MS;
-  for (const [id, ts] of seenEvents) {
-    if (ts < cutoff) seenEvents.delete(id);
-  }
-}
-
-function safeEqualHex(a, b) {
-  if (!a || !b) return false;
-  const aa = Buffer.from(String(a), "utf8");
-  const bb = Buffer.from(String(b), "utf8");
-  return aa.length === bb.length && crypto.timingSafeEqual(aa, bb);
-}
-
-function verifySignature(rawBody, signature) {
-  if (!ZERNIO_WEBHOOK_SECRET) return true;
-  if (!signature) return false;
-  const expected = crypto
-    .createHmac("sha256", ZERNIO_WEBHOOK_SECRET)
-    .update(rawBody)
-    .digest("hex");
-  return safeEqualHex(expected, signature);
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
 }
 
 function pick(obj, paths) {
@@ -64,36 +27,108 @@ function normalizeComment(payload) {
     eventId: pick(payload, ["id"]) || null,
     event: pick(payload, ["event"]) || null,
     text: String(
-      pick(payload, ["comment.text", "comment.message", "data.comment.text", "data.comment.message"]) || ""
+      pick(payload, [
+        "comment.text",
+        "comment.message",
+        "data.comment.text",
+        "data.comment.message",
+      ]) || ""
     ),
     commentId: String(
-      pick(payload, ["comment.id", "comment.commentId", "data.comment.id", "data.comment.commentId"]) || ""
+      pick(payload, [
+        "comment.id",
+        "comment.commentId",
+        "data.comment.id",
+        "data.comment.commentId",
+      ]) || ""
     ),
     postId: String(
-      pick(payload, ["post.id", "post.postId", "comment.postId", "data.post.id", "data.comment.postId"]) || ""
+      pick(payload, [
+        "post.id",
+        "post.postId",
+        "comment.postId",
+        "data.post.id",
+        "data.comment.postId",
+      ]) || ""
     ),
     accountId: String(
-      pick(payload, ["account.accountId", "account.id", "comment.accountId", "data.account.accountId", "data.account.id"]) || ""
+      pick(payload, [
+        "account.accountId",
+        "account.id",
+        "comment.accountId",
+        "data.account.accountId",
+        "data.account.id",
+      ]) || ""
     ),
   };
 }
 
-function matchesKeyword(text) {
-  return String(text).trim().toLowerCase() === KEYWORD;
+function matchesKeyword(text, env) {
+  const keyword = String(env.KEYWORD || "Ai").trim().toLowerCase();
+  return String(text).trim().toLowerCase() === keyword;
 }
 
-function randomPublicReply() {
-  if (!PUBLIC_REPLIES.length) return "تابعني حتى اكدر ارسلك♥️";
-  return PUBLIC_REPLIES[Math.floor(Math.random() * PUBLIC_REPLIES.length)];
+function publicReplies(env) {
+  return String(
+    env.PUBLIC_REPLIES ||
+      "تابعني حتى اكدر ارسلك لان حسابك خاص💫|دزلي متابعه حتى اكدر ادزلك مجاني💙|تابعني حتى اكدر ارسلك♥️"
+  )
+    .split("|")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
-async function zernioPost(path, body) {
-  if (!ZERNIO_API_KEY) throw new Error("Missing ZERNIO_API_KEY");
+function randomPublicReply(env) {
+  const replies = publicReplies(env);
+  if (!replies.length) return "تابعني حتى اكدر ارسلك♥️";
+  return replies[Math.floor(Math.random() * replies.length)];
+}
+
+function hexToBytes(hex) {
+  if (!/^[0-9a-f]+$/i.test(hex) || hex.length % 2 !== 0) return null;
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+function constantTimeEqual(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+async function verifySignature(rawBody, signature, secret) {
+  if (!secret) return true;
+  if (!signature) return false;
+
+  const cleanSignature = String(signature).replace(/^sha256=/i, "").trim();
+  const supplied = hexToBytes(cleanSignature);
+  if (!supplied) return false;
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+
+  const expected = new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(rawBody))
+  );
+  return constantTimeEqual(expected, supplied);
+}
+
+async function zernioPost(path, body, env) {
+  if (!env.ZERNIO_API_KEY) throw new Error("Missing ZERNIO_API_KEY");
 
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${ZERNIO_API_KEY}`,
+      Authorization: `Bearer ${env.ZERNIO_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
@@ -116,26 +151,26 @@ async function zernioPost(path, body) {
   return data;
 }
 
-async function processComment(payload) {
+async function processComment(payload, env) {
   const c = normalizeComment(payload);
 
   if (c.event !== "comment.received") return { skipped: "not_comment_received" };
-  if (!matchesKeyword(c.text)) return { skipped: "keyword_no_match" };
+  if (!matchesKeyword(c.text, env)) return { skipped: "keyword_no_match" };
 
   if (!c.commentId || !c.postId || !c.accountId) {
     console.error("Missing required IDs in webhook payload", c, payload);
     return { skipped: "missing_ids" };
   }
 
-  const publicMessage = randomPublicReply();
-
+  const publicMessage = randomPublicReply(env);
   const publicResult = await zernioPost(
     `/inbox/comments/${encodeURIComponent(c.postId)}`,
     {
       accountId: c.accountId,
       message: publicMessage,
       commentId: c.commentId,
-    }
+    },
+    env
   );
 
   let privateResult = null;
@@ -146,8 +181,9 @@ async function processComment(payload) {
       `/inbox/comments/${encodeURIComponent(c.postId)}/${encodeURIComponent(c.commentId)}/private-reply`,
       {
         accountId: c.accountId,
-        message: DM_MESSAGE,
-      }
+        message: env.DM_MESSAGE || "هلا 💙 هذا هو الشي المجاني اللي طلبته.",
+      },
+      env
     );
   } catch (err) {
     privateError = {
@@ -167,65 +203,48 @@ async function processComment(payload) {
   };
 }
 
-const server = http.createServer((req, res) => {
-  if (req.method === "GET" && req.url === "/") {
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ ok: true, service: "zernio-webhook" }));
-    return;
-  }
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
 
-  if (req.method !== "POST" || req.url !== "/webhooks/zernio") {
-    res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ error: "Not found" }));
-    return;
-  }
-
-  const chunks = [];
-  req.on("data", (chunk) => chunks.push(chunk));
-  req.on("end", () => {
-    const rawBody = Buffer.concat(chunks);
-    const signature =
-      req.headers["x-zernio-signature"] ||
-      req.headers["x-late-signature"];
-
-    if (!verifySignature(rawBody, signature)) {
-      res.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: "Invalid webhook signature" }));
-      return;
+    if (request.method === "GET" && url.pathname === "/") {
+      return json({
+        ok: true,
+        service: "zernio-webhook",
+        runtime: "cloudflare-worker",
+      });
     }
+
+    if (request.method !== "POST" || url.pathname !== "/webhooks/zernio") {
+      return json({ error: "Not found" }, 404);
+    }
+
+    const rawBody = await request.text();
+    const signature =
+      request.headers.get("x-zernio-signature") ||
+      request.headers.get("x-late-signature");
+
+    const valid = await verifySignature(
+      rawBody,
+      signature,
+      env.ZERNIO_WEBHOOK_SECRET || ""
+    );
+
+    if (!valid) return json({ error: "Invalid webhook signature" }, 401);
 
     let payload;
     try {
-      payload = JSON.parse(rawBody.toString("utf8"));
+      payload = JSON.parse(rawBody);
     } catch {
-      res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: "Invalid JSON" }));
-      return;
+      return json({ error: "Invalid JSON" }, 400);
     }
 
-    cleanupSeen();
-    const eventId =
-      payload.id ||
-      req.headers["x-zernio-event-id"] ||
-      req.headers["x-late-event-id"];
+    ctx.waitUntil(
+      processComment(payload, env)
+        .then((result) => console.log("Webhook result:", result))
+        .catch((err) => console.error("Webhook processing failed:", err))
+    );
 
-    if (eventId && seenEvents.has(eventId)) {
-      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ ok: true, duplicate: true }));
-      return;
-    }
-
-    if (eventId) seenEvents.set(eventId, Date.now());
-
-    res.writeHead(202, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ accepted: true }));
-
-    processComment(payload)
-      .then((result) => console.log("Webhook result:", result))
-      .catch((err) => console.error("Webhook processing failed:", err));
-  });
-});
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`zernio-webhook listening on port ${PORT}`);
-});
+    return json({ accepted: true }, 202);
+  },
+};
