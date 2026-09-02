@@ -42,8 +42,14 @@ function normalizeComment(payload) {
         "data.comment.commentId",
       ]) || ""
     ),
+    // Zernio comment.received can have an empty internal postId while
+    // platformPostId is populated. Prefer the platform ID, then fall back.
     postId: String(
       pick(payload, [
+        "comment.platformPostId",
+        "data.comment.platformPostId",
+        "post.platformPostId",
+        "data.post.platformPostId",
         "post.id",
         "post.postId",
         "comment.postId",
@@ -151,31 +157,48 @@ async function zernioPost(path, body, env) {
   return data;
 }
 
+function errorInfo(err) {
+  return {
+    message: err?.message || String(err),
+    status: err?.status || null,
+    data: err?.data || null,
+  };
+}
+
 async function processComment(payload, env) {
   const c = normalizeComment(payload);
+  console.log("Normalized comment:", c);
 
-  if (c.event !== "comment.received") return { skipped: "not_comment_received" };
-  if (!matchesKeyword(c.text, env)) return { skipped: "keyword_no_match" };
+  if (c.event !== "comment.received") return { skipped: "not_comment_received", comment: c };
+  if (!matchesKeyword(c.text, env)) return { skipped: "keyword_no_match", comment: c };
 
   if (!c.commentId || !c.postId || !c.accountId) {
     console.error("Missing required IDs in webhook payload", c, payload);
-    return { skipped: "missing_ids" };
+    return { skipped: "missing_ids", comment: c };
   }
 
   const publicMessage = randomPublicReply(env);
-  const publicResult = await zernioPost(
-    `/inbox/comments/${encodeURIComponent(c.postId)}`,
-    {
-      accountId: c.accountId,
-      message: publicMessage,
-      commentId: c.commentId,
-    },
-    env
-  );
-
+  let publicResult = null;
+  let publicError = null;
   let privateResult = null;
   let privateError = null;
 
+  try {
+    publicResult = await zernioPost(
+      `/inbox/comments/${encodeURIComponent(c.postId)}`,
+      {
+        accountId: c.accountId,
+        message: publicMessage,
+        commentId: c.commentId,
+      },
+      env
+    );
+  } catch (err) {
+    publicError = errorInfo(err);
+    console.error("Public reply failed:", publicError);
+  }
+
+  // Always attempt the DM even if the public reply fails.
   try {
     privateResult = await zernioPost(
       `/inbox/comments/${encodeURIComponent(c.postId)}/${encodeURIComponent(c.commentId)}/private-reply`,
@@ -186,18 +209,16 @@ async function processComment(payload, env) {
       env
     );
   } catch (err) {
-    privateError = {
-      message: err.message,
-      status: err.status || null,
-      data: err.data || null,
-    };
+    privateError = errorInfo(err);
     console.error("Private reply failed:", privateError);
   }
 
   return {
-    ok: true,
+    ok: !publicError || !privateError,
+    comment: c,
     publicReply: publicMessage,
     publicResult,
+    publicError,
     privateResult,
     privateError,
   };
